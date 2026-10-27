@@ -15,12 +15,25 @@ const LIVE_TTL = 60 * 1000;
 const PAST_TTL = 30 * 60 * 1000;
 const MAX_ENTRIES = 200;
 
+// The shared backend occasionally stalls; retry once on timeouts, network errors and 5xx
+const isTransient = (err) => !err?.response || err.response.status >= 500;
+
+async function postWithRetry(path, body) {
+  try {
+    return (await api.post(path, body)).data;
+  } catch (err) {
+    if (!isTransient(err)) throw err;
+    await new Promise((r) => setTimeout(r, 2000));
+    return (await api.post(path, body)).data;
+  }
+}
+
 function cachedPost(path, body) {
   const key = `${path}|${JSON.stringify(body)}`;
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.promise;
 
-  const promise = api.post(path, body).then((r) => r.data);
+  const promise = postWithRetry(path, body);
   const ttl = body.toUtc < Date.now() - 60 * 1000 ? PAST_TTL : LIVE_TTL;
   cache.set(key, { promise, expires: Date.now() + ttl });
   promise.catch(() => cache.delete(key));
